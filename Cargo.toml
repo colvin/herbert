@@ -1,0 +1,13 @@
+[package]
+name = "herbert"
+version = "0.1.0"
+authors = ["colvin <cwellborn@flexera.com>"]
+edition = "2018"
+
+[dependencies]
+crossbeam-channel = "0.4"
+log = "*"
+
+[dev-dependencies]
+chrono = "*"
+fern = "*"
