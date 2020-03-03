@@ -12,3 +12,9 @@ lifecycles. `herbert` addresses these challenges using a centralized message
 router. The router is responsible for spawning actors upon request, monitoring
 and responding to changes in their state, and routing messages to and between
 them.
+
+The name was inspired by this epic review of Taco Bell Cantina:
+
+![herbert-was-great](herbert.jpg)
+
+Justice for Herbert!
