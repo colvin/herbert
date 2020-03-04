@@ -13,8 +13,8 @@ edition = "2018"
 
 [dependencies]
 crossbeam-channel = "0.4"
-log = "*"
+log = "0.4"
 
 [dev-dependencies]
-chrono = "*"
-fern = "*"
+chrono = "0.4"
+fern = "0.5"
