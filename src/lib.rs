@@ -77,7 +77,7 @@
 //!             }
 //!         }
 //!         // Notify the router we are stopped as our last action.
-//!         ctx.stat.send(ActorStatus::Stopped(ctx.id.clone())).unwrap();
+//!         ctx.report_stopped().unwrap();
 //!     });
 //!
 //!     // Send our order to the "herbert" actor thread.
