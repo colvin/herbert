@@ -1,11 +1,10 @@
+//! A simplistic example using two actors based on the same function.
+
+// logging
 #[macro_use]
 extern crate log;
-use log::LevelFilter;
-
-#[macro_use]
-extern crate crossbeam_channel;
-
 use chrono::Utc;
+use log::LevelFilter;
 
 #[macro_use]
 extern crate herbert;

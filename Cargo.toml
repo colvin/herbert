@@ -1,7 +1,14 @@
 [package]
 name = "herbert"
 version = "0.1.0"
-authors = ["colvin <cwellborn@flexera.com>"]
+description = "simple actor management"
+authors = ["colvin <39858617+colvin@users.noreply.github.com>"]
+license = "MIT"
+repository = "https://github.com/colvin/herbert"
+documentation = "https://docs.rs/crate/herbert"
+categories = ["asynchronous", "concurrency"]
+keywords = ["actor", "router", "message"]
+exclude = [".gitignore", "*.jpg"]
 edition = "2018"
 
 [dependencies]

@@ -11,8 +11,8 @@
 //! To maintain a registry of actors, keep track of their channels, and respond to control events,
 //! a special type of actor called a router is launched. A [Router][Router] encapsulates the
 //! channels through which clients interact with the router and the actors it maintains. The
-//! router's registry maps an ID for each actor to a private type similar to `Router` which
-//! similarly encapsulates the channels through which actors receive their input.
+//! router's registry maps an ID for each actor to an [Actor][Actor] type similar to `Router` which
+//! encapsulates the channels through which actors receive their input.
 //!
 //! Actors are spawned through a control message to the router. They are provided an
 //! [ActorContext][ActorContext] that provides the channels over which the function receives its
@@ -20,18 +20,81 @@
 //! router.
 //!
 //! An actor function must:
-//! - Use `select!` from `crossbeam::channel` to receive from both the request channel and the
-//! control channel.
-//! - Convert the `Any` trait objects it receives over the request channel into the correct
+//! - Use the `select!` macro that is re-exported from `crossbeam_channel` to receive from both the
+//! request channel and the control channel.
+//! - Convert the `Any + Send` trait objects it receives over the request channel into the correct
 //! concrete type.
-//! - Respond to [ActorCtl::Stop](enum.ActorCtl.html) messages it receives over the control channel
-//! by promptly stablizing its state, sending the router an
-//! [ActorStatus::Stopped](enum.ActorStatus.html) status message, and exiting.
+//! - Respond to [ActorCtl::Stop][ActorCtl] messages it receives over the control channel by
+//! promptly stablizing its state, sending the router an [ActorStatus::Stopped][ActorStatus] status
+//! message, and exiting.
 //!
-//! See the `router` example program for a complete example.
+//! # Simple Example
+//! ```no_run
+//! #[macro_use]
+//! extern crate herbert;
+//! use herbert::prelude::*;
+//!
+//! fn main() {
+//!     // Create a router. This is manditory.
+//!     let router = Router::run("example");
+//!
+//!     // Spawn an actor, here named "herbert".
+//!     spawn_actor!(router, "herbert", |ctx: ActorContext| {
+//!         loop {
+//!             select! {
+//!                 // Normal message channel.
+//!                 recv(ctx.req) -> msg => {
+//!                     match msg {
+//!                         Ok(any) => {
+//!                             // Convert trait object into concrete type.
+//!                             if let Some(value) = any.downcast_ref::<String>() {
+//!                                 // Do some work.
+//!                                 println!("received order: {}", value);
+//!                             } else {
+//!                                 // Bad value, here we're just ignoring it.
+//!                             }
+//!                         }
+//!                         Err(e) => {
+//!                             // Error receiving a normal message, choosing to terminate.
+//!                             break;
+//!                         }
+//!                     }
+//!                 }
+//!                 // Control message channel.
+//!                 recv(ctx.ctl) -> msg => {
+//!                     match msg {
+//!                         Ok(ActorCtl::Stop) => {
+//!                             // We have been requested to stop.
+//!                             // Stabilize any state and then break the loop to exit.
+//!                             break;
+//!                         }
+//!                         Err(e) => {
+//!                             // Error receiving a control message, choosing to terminate.
+//!                             break;
+//!                         },
+//!                     }
+//!                 }
+//!             }
+//!         }
+//!         // Notify the router we are stopped as our last action.
+//!         ctx.stat.send(ActorStatus::Stopped(ctx.id.clone())).unwrap();
+//!     });
+//!
+//!     // Send our order to the "herbert" actor thread.
+//!     send_actor!(router, "herbert", String::from("2 gorditas")).unwrap();
+//!
+//!     // ...
+//!
+//!     // Shut down the router.
+//!     router.shutdown();
+//! }
+//! ```
 //!
 //! [Router]: struct.Router.html
+//! [Actor]: struct.Actor.html
+//! [ActorCtl]: enum.ActorCtl.html
 //! [ActorContext]: struct.ActorContext.html
+//! [ActorStatus]: enum.ActorStatus.html
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -47,8 +110,13 @@ use crossbeam_channel::{unbounded, Receiver, Sender};
 
 pub mod prelude {
     //! The things you'll need.
+    //!
+    //! Re-exports several items from
+    //! [crossbeam_channel](https://crates.io/crates/crossbeam-channel), including the `unbounded`
+    //! channel type, the `Receiver` and `Sender` types, and the `select!` macro.
 
     pub use crate::{ActorContext, ActorCtl, ActorStatus, Router, RouterCtl, RouterRequest};
+    pub use crossbeam_channel::{select, unbounded, Receiver, Sender};
 }
 
 /// The type signature of the messages that are consumed by actors.
@@ -193,6 +261,8 @@ impl Router {
     }
 
     /// Stop all actors and then stop the router.
+    ///
+    /// Note that actors are stopped in an arbitrary order.
     pub fn shutdown(self) {
         self.ctl.send(RouterCtl::Shutdown).unwrap();
         self.handle.join().unwrap();
@@ -256,15 +326,19 @@ pub enum RouterCtl {
         f: Box<ActorFn>,
         resp: Sender<()>,
     },
+
     /// Retrieve the request channel for an actor from the router.
     Get {
         id: String,
         resp: Sender<Option<Sender<Message>>>,
     },
+
     /// Determine whether or not the router has an actor.
     Has { id: String, resp: Sender<bool> },
+
     /// Stop an actor.
     StopActor { id: String, resp: Sender<()> },
+
     /// Stop all actors and then stop the router.
     Shutdown,
 }
@@ -618,6 +692,7 @@ pub enum ActorStatus {
     /// uses around the actor thread, but actor functions may also catch their own panics and
     /// communicate them back to the router.
     Paniced(String),
+
     /// The actor thread has stopped or is in the process of stopping. This is typically send from
     /// the actor thread to the router immediately before it exits.
     Stopped(String),
