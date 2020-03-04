@@ -8,6 +8,7 @@ repository = "https://github.com/colvin/herbert"
 documentation = "https://docs.rs/crate/herbert"
 categories = ["asynchronous", "concurrency"]
 keywords = ["actor", "router", "message"]
+exclude = [".gitignore", "*.jpg"]
 edition = "2018"
 
 [dependencies]
