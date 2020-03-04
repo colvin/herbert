@@ -74,20 +74,24 @@ fn worker(ctx: ActorContext) {
                             _ => unimplemented!(),
                         }
                     }
-                    Err(e) => error!("{}: {}", ctx.id, e),
+                    Err(e) => {
+                        error!("{}: error receiving on message channel, aborting: {}", ctx.id, e);
+                        break;
+                    }
                 }
             }
             recv(ctx.ctl) -> msg => {
                 match msg {
-                    Ok(ActorCtl::Stop) => {
-                        ctx.stat.send(ActorStatus::Stopped(ctx.id.clone())).unwrap();
+                    Ok(ActorCtl::Stop) => break,
+                    Err(e) => {
+                        error!("{}: error receiving on control channel, aborting: {}", ctx.id, e);
                         break;
                     }
-                    Err(e) => error!("{}: {}", ctx.id, e),
                 }
             }
         }
     }
+    ctx.report_stopped().unwrap();
 }
 
 pub fn setup_logging(lvl: LevelFilter) {

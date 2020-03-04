@@ -56,5 +56,5 @@ fn pow(ctx: ActorContext) {
             recv(ctx.ctl) -> _ => break,
         }
     }
-    ctx.stat.send(ActorStatus::Stopped(ctx.id.clone())).unwrap();
+    ctx.report_stopped().unwrap();
 }

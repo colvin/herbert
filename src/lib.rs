@@ -98,6 +98,7 @@
 
 use std::any::Any;
 use std::collections::HashMap;
+use std::fmt;
 use std::panic::{catch_unwind, UnwindSafe};
 use std::thread;
 
@@ -128,6 +129,9 @@ pub mod prelude {
 /// An actor must downcast the trait object back into a concrete type using the `downcast_ref`
 /// method of the `Any` trait.
 pub type Message = Box<dyn Any + Send>;
+
+/// A custom result type.
+pub type Result<T> = std::result::Result<T, Error>;
 
 /// A handle to the actor management thread.
 ///
@@ -672,6 +676,13 @@ impl ActorContext {
             stat: stat,
         }
     }
+
+    pub fn report_stopped(&self) -> Result<()> {
+        match self.stat.send(ActorStatus::Stopped(self.id.clone())) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(Error::send_error(e)),
+        }
+    }
 }
 
 /// Messages that exhert control over actors.
@@ -696,6 +707,57 @@ pub enum ActorStatus {
     /// The actor thread has stopped or is in the process of stopping. This is typically send from
     /// the actor thread to the router immediately before it exits.
     Stopped(String),
+}
+
+/// Errors that can occur.
+#[derive(Debug)]
+pub enum Error {
+    /// An error sending on a channel.
+    ///
+    /// Converts the underlying `crossbeam_channel::SendError` into a string representation to make
+    /// it easier, if less flexible, to deal with.
+    SendError(String),
+
+    /// An error receiving on a channel.
+    ///
+    /// Converts the underlying `crossbeam_channel::RecvError` into a string representation to make
+    /// it easier, if less flexible, to deal with.
+    RecvError(String),
+
+    /// The specified actor does not exist, or is not known to the router. Embeds the ID of the
+    /// actor.
+    ///
+    /// If an actor thread panics or otherwise chooses to stop, it is removed from the router and
+    /// subsequent attempts to send messages to that actor will result in this error.
+    NoSuchActor(String),
+}
+
+impl Error {
+    /// Construct an `Error::SendError` from an underlying `crossbeam_channel::SendError<T>`.
+    pub fn send_error<T>(e: crossbeam_channel::SendError<T>) -> Self {
+        Self::SendError(e.to_string())
+    }
+
+    /// Construct an `Error::RecvError` from an underlying `crossbeam_channel::RecvError`.
+    pub fn recv_error(e: crossbeam_channel::RecvError) -> Self {
+        Self::RecvError(e.to_string())
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::SendError(e) => write!(f, "{}", e),
+            Self::RecvError(e) => write!(f, "{}", e),
+            Self::NoSuchActor(id) => write!(f, "no such actor: {}", id),
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        None
+    }
 }
 
 #[cfg(test)]
