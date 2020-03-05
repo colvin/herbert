@@ -108,7 +108,7 @@ fn worker(ctx: ActorContext) {
     ctx.report_stopped().unwrap();
 }
 
-pub fn setup_logging(lvl: LevelFilter) {
+fn setup_logging(lvl: LevelFilter) {
     fern::Dispatch::new()
         .format(|out, message, record| {
             out.finish(format_args!(
