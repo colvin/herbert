@@ -11,6 +11,9 @@ categories = ["asynchronous", "concurrency"]
 keywords = ["actor", "router", "message"]
 edition = "2018"
 
+[badges]
+travis-ci = { repository = "colvin/herbert", branch = "master", service = "github" }
+
 [dependencies]
 crossbeam-channel = "0.4"
 log = "0.4"
