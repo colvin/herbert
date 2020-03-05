@@ -7,7 +7,7 @@ use herbert::prelude::*;
 
 fn main() {
     let router = Router::run("example");
-    spawn_actor!(router, "pow", pow);
+    spawn_actor!(router, "pow", pow).unwrap();
 
     println!("sending pow: 12");
     let (msg, rx) = CustomMessage::new(12);
@@ -56,5 +56,5 @@ fn pow(ctx: ActorContext) {
             recv(ctx.ctl) -> _ => break,
         }
     }
-    ctx.stat.send(ActorStatus::Stopped(ctx.id.clone())).unwrap();
+    ctx.report_stopped().unwrap();
 }

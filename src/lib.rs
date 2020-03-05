@@ -77,8 +77,8 @@
 //!             }
 //!         }
 //!         // Notify the router we are stopped as our last action.
-//!         ctx.stat.send(ActorStatus::Stopped(ctx.id.clone())).unwrap();
-//!     });
+//!         ctx.report_stopped().unwrap();
+//!     }).unwrap();
 //!
 //!     // Send our order to the "herbert" actor thread.
 //!     send_actor!(router, "herbert", String::from("2 gorditas")).unwrap();
@@ -98,6 +98,7 @@
 
 use std::any::Any;
 use std::collections::HashMap;
+use std::fmt;
 use std::panic::{catch_unwind, UnwindSafe};
 use std::thread;
 
@@ -128,6 +129,9 @@ pub mod prelude {
 /// An actor must downcast the trait object back into a concrete type using the `downcast_ref`
 /// method of the `Any` trait.
 pub type Message = Box<dyn Any + Send>;
+
+/// A custom result type.
+pub type Result<T> = std::result::Result<T, Error>;
 
 /// A handle to the actor management thread.
 ///
@@ -207,9 +211,9 @@ impl Router {
                             },
                             Ok(RouterCtl::Get { id, resp }) => {
                                 if let Some(actor) = table.get(&id) {
-                                    resp.send(Some(actor.req.clone())).unwrap();
+                                    resp.send(Ok(actor.req.clone())).unwrap();
                                 } else {
-                                    resp.send(None).unwrap();
+                                    resp.send(Err(Error::NoSuchActor(id.clone()))).unwrap();
                                 }
                             }
                             Ok(RouterCtl::Has { id, resp }) => {
@@ -221,6 +225,12 @@ impl Router {
                                     actor.ctl.send(ActorCtl::Stop).unwrap();
                                     actor.handle.join().unwrap();
                                     resp.send(()).unwrap();
+                                }
+                            }
+                            Ok(RouterCtl::StopActorAsync(id)) => {
+                                if let Some(actor) = table.remove(&id) {
+                                    info!("router::{}: stopping actor '{}'", router_id, actor.id);
+                                    actor.ctl.send(ActorCtl::Stop).unwrap();
                                 }
                             }
                             Ok(RouterCtl::Shutdown) => {
@@ -260,6 +270,80 @@ impl Router {
         }
     }
 
+    /// Spawn an actor.
+    pub fn spawn(&self, id: &str, f: Box<ActorFn>) -> Result<()> {
+        let (spawn, resp) = RouterCtl::spawn(id, f);
+        match self.ctl.send(spawn) {
+            Ok(()) => match resp.recv() {
+                Ok(()) => Ok(()),
+                Err(e) => Err(Error::recv_error(e)),
+            },
+            Err(e) => Err(Error::send_error(e)),
+        }
+    }
+
+    /// Determine whether the router has a route to an actor, at the time of inspection.
+    pub fn has(&self, id: &str) -> Result<bool> {
+        let (has, resp) = RouterCtl::has(id);
+        if let Err(e) = self.ctl.send(has) {
+            return Err(Error::send_error(e));
+        }
+        match resp.recv() {
+            Ok(b) => Ok(b),
+            Err(e) => Err(Error::recv_error(e)),
+        }
+    }
+
+    /// Retrieve a copy of an actor's request channel `Sender`.
+    pub fn get(&self, id: &str) -> Result<Sender<Message>> {
+        let (get, resp) = RouterCtl::get(id);
+        if let Err(e) = self.ctl.send(get) {
+            return Err(Error::send_error(e));
+        }
+        match resp.recv() {
+            Ok(sender) => sender,
+            Err(e) => Err(Error::recv_error(e)),
+        }
+    }
+
+    /// Send a message to an actor.
+    pub fn send(&self, id: &str, msg: Message) -> Result<()> {
+        match self.req.send(RouterRequest::new(id, msg)) {
+            Ok(()) => Ok(()),
+            Err(e) => Err(Error::send_error(e)),
+        }
+    }
+
+    /// Stop an actor.
+    pub fn stop(&self, id: &str) -> Result<()> {
+        let (stop, resp) = RouterCtl::stop_actor(id);
+        if let Err(e) = self.ctl.send(stop) {
+            return Err(Error::send_error(e));
+        }
+        if let Err(e) = resp.recv() {
+            return Err(Error::recv_error(e));
+        }
+        Ok(())
+    }
+
+    /// Stop an actor without waiting for it to stop.
+    pub fn stop_async(&self, id: &str) -> Result<()> {
+        if let Err(e) = self.ctl.send(RouterCtl::stop_actor_async(id)) {
+            return Err(Error::send_error(e));
+        }
+        Ok(())
+    }
+
+    /// Stop a list of actors in order.
+    pub fn stop_list(&self, ids: Vec<String>) -> Result<()> {
+        for id in ids {
+            if let Err(e) = self.stop(&id) {
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
     /// Stop all actors and then stop the router.
     ///
     /// Note that actors are stopped in an arbitrary order.
@@ -288,29 +372,14 @@ impl RouterRequest {
     }
 }
 
-/// A wrapper for sending a message to an actor through a [Router](actor/struct.Router.html).
+/// A wrapper for sending a message to an actor.
 ///
-/// This constructs a new [RouterRequest](actor/struct.RouterRequest.html) and sends it to the router.
-/// It returns the `Result` value of the send operation on the [Router's](actor/struct.Router.html)
-/// requests channel.
+/// Sends a message to an actor through a [Router](struct.Router.html), possibly indirectly
+/// through an [ActorContext](struct.ActorContext.html).
 #[macro_export]
 macro_rules! send_actor {
     ($r:ident, $i:expr, $v:expr) => {{
-        $r.req.send($crate::RouterRequest::new($i, Box::new($v)))
-    }};
-}
-
-/// A wrapper for sending a message to an actor through a [Router](actor/struct.Router.html), from
-/// within another actor.
-///
-/// This constructs a new [RouterRequest](actor/struct.RouterRequest.html) and sends it to the
-/// router through the [ActorContext](actor/struct.ActorContext.html).  It returns the `Result`
-/// value of the send operation on the [Router's](actor/struct.Router.html) requests channel.
-#[macro_export]
-macro_rules! actor_send_actor {
-    ($c:ident, $i:expr, $v:expr) => {{
-        $c.router_req
-            .send($crate::RouterRequest::new($i, Box::new($v)))
+        $r.send($i, Box::new($v))
     }};
 }
 
@@ -330,7 +399,7 @@ pub enum RouterCtl {
     /// Retrieve the request channel for an actor from the router.
     Get {
         id: String,
-        resp: Sender<Option<Sender<Message>>>,
+        resp: Sender<Result<Sender<Message>>>,
     },
 
     /// Determine whether or not the router has an actor.
@@ -338,6 +407,9 @@ pub enum RouterCtl {
 
     /// Stop an actor.
     StopActor { id: String, resp: Sender<()> },
+
+    /// Stop an actor without waiting for it to stop.
+    StopActorAsync(String),
 
     /// Stop all actors and then stop the router.
     Shutdown,
@@ -368,7 +440,7 @@ impl RouterCtl {
     /// the caller the `Sender` for the given actor (or `None`, if no such actor exists).
     ///
     /// The `get_actor!` macro provides a more ergonomic wrapper around this method.
-    pub fn get(id: &str) -> (Self, Receiver<Option<Sender<Message>>>) {
+    pub fn get(id: &str) -> (Self, Receiver<Result<Sender<Message>>>) {
         let (tx, rx) = unbounded();
         (
             Self::Get {
@@ -411,6 +483,10 @@ impl RouterCtl {
             rx,
         )
     }
+
+    pub fn stop_actor_async(id: &str) -> Self {
+        Self::StopActorAsync(id.to_owned())
+    }
 }
 
 /// A wrapper for executing a [RouterCtl::Spawn][RouterCtl] request on a [Router][Router].
@@ -418,200 +494,12 @@ impl RouterCtl {
 /// Creates a `RouterCtl::Spawn` request, sends it to the router, and recieves the router's
 /// response.
 ///
-/// Will panic if the request fails to be sent or the response fails to be received. In the four
-/// argument form, `expect` is used to provide a better panic message.
-///
-/// [RouterCtl]: actor/enum.RouterCtl.html
-/// [Router]: actor/struct.Router.html
+/// [RouterCtl]: enum.RouterCtl.html
+/// [Router]: struct.Router.html
 #[macro_export]
 macro_rules! spawn_actor {
     ($r:ident, $i:expr, $f:expr) => {{
-        let (spawn, resp) = $crate::RouterCtl::spawn($i, Box::new($f));
-        $r.ctl.send(spawn).unwrap();
-        resp.recv().unwrap();
-    }};
-    ($r:ident, $i:expr, $f:expr, $e:expr) => {{
-        let (spawn, resp) = $crate::RouterCtl::spawn($i, Box::new($f));
-        $r.ctl.send(spawn).expect($e);
-        resp.recv().expect($e);
-    }};
-}
-
-/// A wrapper for executing a [RouterCtl::Spawn][RouterCtl] request on a [Router][Router], from
-/// within another actor.
-///
-/// Creates a `RouterCtl::Spawn` request, sends it to the router through the
-/// [ActorContext][ActorContext], and recieves the router's response.
-///
-/// Will panic if the request fails to be sent or the response fails to be received. In the four
-/// argument form, `expect` is used to provide a better panic message.
-///
-/// [RouterCtl]: actor/enum.RouterCtl.html
-/// [Router]: actor/struct.Router.html
-/// [ActorContext]: actor/struct.ActorContext.html
-#[macro_export]
-macro_rules! actor_spawn_actor {
-    ($c:ident, $i:expr, $f:expr) => {{
-        let (spawn, resp) = $crate::RouterCtl::spawn($i, Box::new($f));
-        $c.router_ctl.send(spawn).unwrap();
-        resp.recv().unwrap();
-    }};
-    ($c:ident, $i:expr, $f:expr, $e:expr) => {{
-        let (spawn, resp) = $crate::RouterCtl::spawn($i, Box::new($f));
-        $c.router_ctl.send(spawn).expect($e);
-        resp.recv().expect($e);
-    }};
-}
-
-/// A wrapper for executing a [RouterCtl::Has][RouterCtl] request on a [Router][Router].
-///
-/// Creates a `RouterCtl::Has` request, sends it to the router, and recieves the router's response.
-/// The value is returned to the caller.
-///
-/// Will panic if the request fails to be sent or the response fails to be received. In the four
-/// argument form, `expect` is used to provide a better panic message.
-///
-/// [RouterCtl]: actor/enum.RouterCtl.html
-/// [Router]: actor/struct.Router.html
-#[macro_export]
-macro_rules! has_actor {
-    ($r:ident, $i:expr) => {{
-        let (has, resp) = $crate::RouterCtl::has($i);
-        $r.ctl.send(has).unwrap();
-        resp.recv().unwrap()
-    }};
-    ($r:ident, $i:expr, $e:expr) => {{
-        let (has, resp) = $crate::RouterCtl::has($i);
-        $r.ctl.send(has).expect($e);
-        resp.recv().expect($e)
-    }};
-}
-
-/// A wrapper for executing a [RouterCtl::Has][RouterCtl] request on a [Router][Router], from
-/// within another actor.
-///
-/// Creates a `RouterCtl::Has` request, sends it to the router through the
-/// [ActorContext][ActorContext], and recieves the router's response. The value is returned to the
-/// caller.
-///
-/// Will panic if the request fails to be sent or the response fails to be received. In the four
-/// argument form, `expect` is used to provide a better panic message.
-///
-/// [RouterCtl]: actor/enum.RouterCtl.html
-/// [Router]: actor/struct.Router.html
-/// [ActorContext]: actor/struct.ActorContext.html
-#[macro_export]
-macro_rules! actor_has_actor {
-    ($c:ident, $i:expr) => {{
-        let (has, resp) = $crate::RouterCtl::has($i);
-        $c.router_ctl.send(has).unwrap();
-        resp.recv().unwrap()
-    }};
-    ($c:ident, $i:expr, $e:expr) => {{
-        let (has, resp) = $crate::RouterCtl::has($i);
-        $c.router_ctl.send(has).expect($e);
-        resp.recv().expect($e)
-    }};
-}
-
-/// A wrapper for executing a [RouterCtl::Get][RouterCtl] request on a [Router][Router].
-///
-/// Creates a `RouterCtl::Get` request, sends it to the router, and recieves the router's response.
-/// The value is returned to the caller.
-///
-/// Will panic if the request fails to be sent or the response fails to be received. In the four
-/// argument form, `expect` is used to provide a better panic message.
-///
-/// [RouterCtl]: actor/enum.RouterCtl.html
-/// [Router]: actor/struct.Router.html
-#[macro_export]
-macro_rules! get_actor {
-    ($r:ident, $i:expr) => {{
-        let (get, resp) = $crate::RouterCtl::get($i);
-        $r.ctl.send(get).unwrap();
-        resp.recv().unwrap()
-    }};
-    ($r:ident, $i:expr, $e:expr) => {{
-        let (get, resp) = $crate::RouterCtl::get($i);
-        $r.ctl.send(get).expect($e);
-        resp.recv().expect($e)
-    }};
-}
-
-/// A wrapper for executing a [RouterCtl::Get][RouterCtl] request on a [Router][Router], from
-/// within another actor.
-///
-/// Creates a `RouterCtl::Get` request, sends it to the router through the
-/// [ActorContext][ActorContext], and recieves the router's response. The value is returned to the
-/// caller.
-///
-/// Will panic if the request fails to be sent or the response fails to be received. In the four
-/// argument form, `expect` is used to provide a better panic message.
-///
-/// [RouterCtl]: actor/enum.RouterCtl.html
-/// [Router]: actor/struct.Router.html
-/// [ActorContext]: actor/struct.ActorContext.html
-#[macro_export]
-macro_rules! actor_get_actor {
-    ($c:ident, $i:expr) => {{
-        let (get, resp) = $crate::RouterCtl::get($i);
-        $c.router_ctl.send(get).unwrap();
-        resp.recv().unwrap()
-    }};
-    ($c:ident, $i:expr, $e:expr) => {{
-        let (get, resp) = $crate::RouterCtl::get($i);
-        $c.router_ctl.send(get).expect($e);
-        resp.recv().expect($e)
-    }};
-}
-
-/// A wrapper for executing a [RouterCtl::StopActor][RouterCtl] request on a [Router][Router].
-///
-/// Creates a `RouterCtl::StopActor` request, sends it to the router, and recieves the router's
-/// response.
-///
-/// Will panic if the request fails to be sent or the response fails to be received. In the four
-/// argument form, `expect` is used to provide a better panic message.
-///
-/// [RouterCtl]: actor/enum.RouterCtl.html
-/// [Router]: actor/struct.Router.html
-#[macro_export]
-macro_rules! stop_actor {
-    ($r:ident, $i:expr) => {{
-        let (stop, resp) = $crate::RouterCtl::stop_actor($i);
-        $r.ctl.send(stop).unwrap();
-        resp.recv().unwrap();
-    }};
-    ($r:ident, $i:expr, $e:expr) => {{
-        let (stop, resp) = $crate::RouterCtl::stop_actor($i);
-        $r.ctl.send(stop).expect($e);
-        resp.recv().expect($e);
-    }};
-}
-
-/// A wrapper for executing a [RouterCtl::StopActor][RouterCtl] request on a [Router][Router], from
-/// within another actor.
-///
-/// Creates a `RouterCtl::StopActor` request, sends it to the router through the
-/// [ActorContext][ActorContext], and recieves the router's response.
-///
-/// Will panic if the request fails to be sent or the response fails to be received. In the four
-/// argument form, `expect` is used to provide a better panic message.
-///
-/// [RouterCtl]: actor/enum.RouterCtl.html
-/// [Router]: actor/struct.Router.html
-/// [ActorContext]: actor/struct.ActorContext.html
-#[macro_export]
-macro_rules! actor_stop_actor {
-    ($c:ident, $i:expr) => {{
-        let (stop, resp) = $crate::RouterCtl::stop_actor($i);
-        $c.router_ctl.send(stop).unwrap();
-        resp.recv().unwrap();
-    }};
-    ($c:ident, $i:expr, $e:expr) => {{
-        let (stop, resp) = $crate::RouterCtl::stop_actor($i);
-        $c.router_ctl.send(stop).expect($e);
-        resp.recv().expect($e);
+        $r.spawn($i, Box::new($f))
     }};
 }
 
@@ -672,6 +560,85 @@ impl ActorContext {
             stat: stat,
         }
     }
+
+    /// Spawn a new actor.
+    pub fn spawn(&self, id: &str, f: Box<ActorFn>) -> Result<()> {
+        let (spawn, resp) = RouterCtl::spawn(id, f);
+        match self.router_ctl.send(spawn) {
+            Ok(()) => match resp.recv() {
+                Ok(()) => Ok(()),
+                Err(e) => Err(Error::recv_error(e)),
+            },
+            Err(e) => Err(Error::send_error(e)),
+        }
+    }
+
+    /// Determine whether the router has a route to another actor, at the time of inspection.
+    pub fn has(&self, id: &str) -> Result<bool> {
+        let (has, resp) = RouterCtl::has(id);
+        if let Err(e) = self.router_ctl.send(has) {
+            return Err(Error::send_error(e));
+        }
+        match resp.recv() {
+            Ok(b) => Ok(b),
+            Err(e) => Err(Error::recv_error(e)),
+        }
+    }
+
+    /// Retrieve a copy of another actor's request channel `Sender`.
+    pub fn get(&self, id: &str) -> Result<Sender<Message>> {
+        let (get, resp) = RouterCtl::get(id);
+        if let Err(e) = self.router_ctl.send(get) {
+            return Err(Error::send_error(e));
+        }
+        match resp.recv() {
+            Ok(sender) => sender,
+            Err(e) => Err(Error::recv_error(e)),
+        }
+    }
+
+    /// Send a message to another actor.
+    pub fn send(&self, id: &str, msg: Message) -> Result<()> {
+        match self.router_req.send(RouterRequest::new(id, msg)) {
+            Ok(()) => Ok(()),
+            Err(e) => Err(Error::send_error(e)),
+        }
+    }
+
+    /// Stop another actor.
+    ///
+    /// Warning: if attempting to stop another actor while in the process of being stopped, the
+    /// router will be blocked awaiting a response. The router will not receive the stop request
+    /// until after you have completed stopping and a deadlock will occur.
+    pub fn stop(&self, id: &str) -> Result<()> {
+        let (stop, resp) = RouterCtl::stop_actor(id);
+        if let Err(e) = self.router_ctl.send(stop) {
+            return Err(Error::send_error(e));
+        }
+        match resp.recv() {
+            Ok(()) => Ok(()),
+            Err(e) => Err(Error::recv_error(e)),
+        }
+    }
+
+    /// Stop another actor without waiting for it to stop.
+    ///
+    /// This should be used when stopping an actor from within an actor that is currently in the
+    /// process of being stopped.
+    pub fn stop_async(&self, id: &str) -> Result<()> {
+        if let Err(e) = self.router_ctl.send(RouterCtl::stop_actor_async(id)) {
+            return Err(Error::send_error(e));
+        }
+        Ok(())
+    }
+
+    /// Inform the router that we are stopping.
+    pub fn report_stopped(&self) -> Result<()> {
+        match self.stat.send(ActorStatus::Stopped(self.id.clone())) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(Error::send_error(e)),
+        }
+    }
 }
 
 /// Messages that exhert control over actors.
@@ -698,6 +665,57 @@ pub enum ActorStatus {
     Stopped(String),
 }
 
+/// Errors that can occur.
+#[derive(Debug)]
+pub enum Error {
+    /// An error sending on a channel.
+    ///
+    /// Converts the underlying `crossbeam_channel::SendError` into a string representation to make
+    /// it easier, if less flexible, to deal with.
+    SendError(String),
+
+    /// An error receiving on a channel.
+    ///
+    /// Converts the underlying `crossbeam_channel::RecvError` into a string representation to make
+    /// it easier, if less flexible, to deal with.
+    RecvError(String),
+
+    /// The specified actor does not exist, or is not known to the router. Embeds the ID of the
+    /// actor.
+    ///
+    /// If an actor thread panics or otherwise chooses to stop, it is removed from the router and
+    /// subsequent attempts to send messages to that actor will result in this error.
+    NoSuchActor(String),
+}
+
+impl Error {
+    /// Construct an `Error::SendError` from an underlying `crossbeam_channel::SendError<T>`.
+    pub fn send_error<T>(e: crossbeam_channel::SendError<T>) -> Self {
+        Self::SendError(e.to_string())
+    }
+
+    /// Construct an `Error::RecvError` from an underlying `crossbeam_channel::RecvError`.
+    pub fn recv_error(e: crossbeam_channel::RecvError) -> Self {
+        Self::RecvError(e.to_string())
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::SendError(e) => write!(f, "{}", e),
+            Self::RecvError(e) => write!(f, "{}", e),
+            Self::NoSuchActor(id) => write!(f, "no such actor: {}", id),
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::prelude::*;
@@ -706,14 +724,19 @@ mod tests {
     fn basic_router() {
         let router = Router::run("test");
 
-        assert!(!has_actor!(router, "foo"));
+        assert!(!router.has("foo").unwrap());
 
         spawn_actor!(router, "foo", |ctx: ActorContext| {
             ctx.ctl.recv().unwrap();
-            ctx.stat.send(ActorStatus::Stopped(ctx.id)).unwrap();
-        });
+            ctx.report_stopped().unwrap();
+        })
+        .unwrap();
 
-        assert!(has_actor!(router, "foo"));
+        assert!(router.has("foo").unwrap());
+
+        router.stop("foo").unwrap();
+
+        assert!(!router.has("foo").unwrap());
 
         router.shutdown();
     }

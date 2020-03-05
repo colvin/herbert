@@ -15,12 +15,12 @@ fn main() {
 
     let router = Router::run("foo");
 
-    spawn_actor!(router, "one", worker);
-    spawn_actor!(router, "two", worker);
+    spawn_actor!(router, "one", worker).unwrap();
+    spawn_actor!(router, "two", worker).unwrap();
 
-    if has_actor!(router, "one") {
+    if router.has("one").unwrap() {
         info!("confirmed we have actor one");
-        if let Some(one) = get_actor!(router, "one") {
+        if let Ok(one) = router.get("one") {
             info!("sending actor one a direct message");
             one.send(Box::new(One {
                 id: "direct".to_owned(),
@@ -35,15 +35,17 @@ fn main() {
     let input = vec!["foo", "bar", "baz"];
     for (i, v) in (0..10).zip(input.into_iter().cycle()) {
         if i % 2 == 0 {
-            send_actor!(router, "one", One { id: v.to_owned() }).unwrap();
+            // Send using the macro
+            send_actor!(router, "one", One::new(v)).unwrap();
         } else {
-            send_actor!(router, "two", Two { id: v.to_owned() }).unwrap();
+            // Send without using the macro
+            router.send("two", Box::new(Two::new(v))).unwrap();
         }
     }
 
     std::thread::sleep(std::time::Duration::from_millis(100));
 
-    stop_actor!(router, "one");
+    router.stop("one").unwrap();
 
     std::thread::sleep(std::time::Duration::from_millis(300));
 
@@ -54,8 +56,20 @@ struct One {
     id: String,
 }
 
+impl One {
+    fn new(id: &str) -> Self {
+        Self { id: id.to_owned() }
+    }
+}
+
 struct Two {
     id: String,
+}
+
+impl Two {
+    fn new(id: &str) -> Self {
+        Self { id: id.to_owned() }
+    }
 }
 
 fn worker(ctx: ActorContext) {
@@ -71,23 +85,27 @@ fn worker(ctx: ActorContext) {
                             "two" => {
                                 info!("{}: {}", ctx.id, v.downcast_ref::<Two>().unwrap().id);
                             }
-                            _ => unimplemented!(),
+                            _ => unreachable!(),
                         }
                     }
-                    Err(e) => error!("{}: {}", ctx.id, e),
+                    Err(e) => {
+                        error!("{}: error receiving on message channel, aborting: {}", ctx.id, e);
+                        break;
+                    }
                 }
             }
             recv(ctx.ctl) -> msg => {
                 match msg {
-                    Ok(ActorCtl::Stop) => {
-                        ctx.stat.send(ActorStatus::Stopped(ctx.id.clone())).unwrap();
+                    Ok(ActorCtl::Stop) => break,
+                    Err(e) => {
+                        error!("{}: error receiving on control channel, aborting: {}", ctx.id, e);
                         break;
                     }
-                    Err(e) => error!("{}: {}", ctx.id, e),
                 }
             }
         }
     }
+    ctx.report_stopped().unwrap();
 }
 
 pub fn setup_logging(lvl: LevelFilter) {

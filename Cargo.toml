@@ -1,15 +1,18 @@
 [package]
 name = "herbert"
-version = "0.1.0"
+version = "0.2.0"
 description = "simple actor management"
 authors = ["colvin <39858617+colvin@users.noreply.github.com>"]
 license = "MIT"
 repository = "https://github.com/colvin/herbert"
 documentation = "https://docs.rs/crate/herbert"
+readme = "README.md"
 categories = ["asynchronous", "concurrency"]
 keywords = ["actor", "router", "message"]
-exclude = [".gitignore", "*.jpg"]
 edition = "2018"
+
+[badges]
+travis-ci = { repository = "colvin/herbert", branch = "master", service = "github" }
 
 [dependencies]
 crossbeam-channel = "0.4"
