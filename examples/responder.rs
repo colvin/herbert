@@ -7,7 +7,7 @@ use herbert::prelude::*;
 
 fn main() {
     let router = Router::run("example");
-    spawn_actor!(router, "pow", pow);
+    spawn_actor!(router, "pow", pow).unwrap();
 
     println!("sending pow: 12");
     let (msg, rx) = CustomMessage::new(12);
