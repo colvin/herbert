@@ -118,7 +118,7 @@ fn sap(ctx: ActorContext) {
     info!("{}: stopped", ctx.id);
 }
 
-pub fn setup_logging(lvl: log::LevelFilter) {
+fn setup_logging(lvl: log::LevelFilter) {
     fern::Dispatch::new()
         .format(|out, message, record| {
             out.finish(format_args!(
