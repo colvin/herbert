@@ -161,7 +161,7 @@ impl Router {
             let mut table: HashMap<String, Actor> = HashMap::new();
             let (stat_tx, stat) = unbounded::<ActorStatus>();
 
-            info!("router::{}: started", router_id);
+            debug!("router::{}: started", router_id);
 
             loop {
                 select! {
@@ -180,7 +180,7 @@ impl Router {
                     recv(ctl) -> msg => {
                         match msg {
                             Ok(RouterCtl::Spawn { id, f, resp }) => {
-                                info!("router::{}: spawning actor '{}'", router_id, id);
+                                debug!("router::{}: spawning actor '{}'", router_id, id);
                                 let (actor_req_tx, actor_req_rx) = unbounded();
                                 let (actor_ctl_tx, actor_ctl_rx) = unbounded();
                                 let ctx = ActorContext::new(
@@ -221,7 +221,7 @@ impl Router {
                             }
                             Ok(RouterCtl::StopActor { id, resp }) => {
                                 if let Some(actor) = table.remove(&id) {
-                                    info!("router::{}: stopping actor '{}'", router_id, actor.id);
+                                    debug!("router::{}: stopping actor '{}'", router_id, actor.id);
                                     actor.ctl.send(ActorCtl::Stop).unwrap();
                                     actor.handle.join().unwrap();
                                     resp.send(()).unwrap();
@@ -229,14 +229,14 @@ impl Router {
                             }
                             Ok(RouterCtl::StopActorAsync(id)) => {
                                 if let Some(actor) = table.remove(&id) {
-                                    info!("router::{}: stopping actor '{}'", router_id, actor.id);
+                                    debug!("router::{}: stopping actor '{}'", router_id, actor.id);
                                     actor.ctl.send(ActorCtl::Stop).unwrap();
                                 }
                             }
                             Ok(RouterCtl::Shutdown) => {
-                                info!("router::{}: stopping all actors ...", router_id);
+                                debug!("router::{}: stopping all actors ...", router_id);
                                 for (_, actor) in table.drain() {
-                                    info!("router::{}: stopping actor '{}'", router_id, actor.id);
+                                    debug!("router::{}: stopping actor '{}'", router_id, actor.id);
                                     actor.ctl.send(ActorCtl::Stop).unwrap();
                                     actor.handle.join().unwrap();
                                 }
@@ -248,7 +248,7 @@ impl Router {
                     recv(stat) -> msg => {
                         match msg {
                             Ok(ActorStatus::Stopped(id)) => {
-                                info!("router::{}: actor '{}' stopped", router_id, id);
+                                debug!("router::{}: actor '{}' stopped", router_id, id);
                                 table.remove(&id);
                             }
                             Ok(ActorStatus::Paniced(id)) => {
@@ -260,7 +260,7 @@ impl Router {
                     },
                 }
             }
-            info!("router::{}: stopped", router_id);
+            debug!("router::{}: stopped", router_id);
         });
         Self {
             id: id.to_owned(),
